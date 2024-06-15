@@ -1,16 +1,16 @@
 <template>
-            <div class="flex justify-center gap-2 items-center mt-4">
+            <div class="flex justify-center gap-2 items-center ">
             <Label>
                 <template #title>
                     Chat LLm 
                 </template>
-                {{ collection.data.driver }}
+                {{ collection.driver }}
             </Label>
             <Label>
                 <template #title>
                     Embedding LLm 
                 </template>
-                {{ collection.data.embedding_driver }}
+                {{ collection.embedding_driver }}
             </Label>
         </div>
 </template>

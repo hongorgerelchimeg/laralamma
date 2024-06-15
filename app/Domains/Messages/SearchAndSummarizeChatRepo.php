@@ -4,28 +4,40 @@ namespace App\Domains\Messages;
 
 use App\Domains\Agents\VerifyPromptInputDto;
 use App\Domains\Agents\VerifyPromptOutputDto;
+use App\Domains\Prompts\SummarizePrompt;
 use App\Models\Chat;
 use App\Models\DocumentChunk;
+use App\Models\Filter;
+use App\Models\PromptHistory;
 use Facades\App\Domains\Agents\VerifyResponseAgent;
 use Illuminate\Support\Facades\Log;
 use Laravel\Pennant\Feature;
+use LlmLaraHub\LlmDriver\DistanceQuery\DistanceQueryFacade;
 use LlmLaraHub\LlmDriver\Helpers\CreateReferencesTrait;
-use LlmLaraHub\LlmDriver\Helpers\DistanceQueryTrait;
 use LlmLaraHub\LlmDriver\LlmDriverFacade;
 use LlmLaraHub\LlmDriver\Responses\CompletionResponse;
 use LlmLaraHub\LlmDriver\Responses\EmbeddingsResponseDto;
 
 class SearchAndSummarizeChatRepo
 {
-    use CreateReferencesTrait, DistanceQueryTrait;
+    use CreateReferencesTrait;
 
-    public function search(Chat $chat, string $input): string
+    protected string $response = '';
+
+    public function search(Chat $chat,
+        string $input,
+        ?Filter $filter = null): string
     {
-        Log::info('[LaraChain] Embedding and Searching');
+        Log::info('[LaraChain] Search and Summarize Default Function', [
+            'note' => 'Showing input since some system grab the last on the array',
+            'input' => $input,
+        ]);
 
         $originalPrompt = $input;
 
-        notify_ui($chat, 'Searching documents');
+        Log::info('[LaraChain] Embedding the Data', [
+            'question' => $input,
+        ]);
 
         /** @var EmbeddingsResponseDto $embedding */
         $embedding = LlmDriverFacade::driver(
@@ -34,11 +46,13 @@ class SearchAndSummarizeChatRepo
 
         $embeddingSize = get_embedding_size($chat->chatable->getEmbeddingDriver());
 
-        $documentChunkResults = $this->distance(
+        /** @phpstan-ignore-next-line */
+        $documentChunkResults = DistanceQueryFacade::cosineDistance(
             $embeddingSize,
             /** @phpstan-ignore-next-line */
             $chat->getChatable()->id,
-            $embedding->embedding
+            $embedding->embedding,
+            $filter
         );
 
         $content = [];
@@ -54,21 +68,10 @@ class SearchAndSummarizeChatRepo
 
         $context = implode(' ', $content);
 
-        $contentFlattened = <<<PROMPT
-You are a helpful assistant in the RAG system: 
-This is data from the search results when entering the users prompt which is 
-
-
-### START PROMPT 
-{$originalPrompt} 
-### END PROMPT
-
-Please use this with the following context and only this, summarize it for the user and return as markdown so I can render it and strip out and formatting like extra spaces, tabs, periods etc: 
-
-### START Context
-$context
-### END Context
-PROMPT;
+        $contentFlattened = SummarizePrompt::prompt(
+            originalPrompt: $originalPrompt,
+            context: $context
+        );
 
         $chat->addInput(
             message: $contentFlattened,
@@ -77,9 +80,14 @@ PROMPT;
             show_in_thread: false
         );
 
+        /** @TODO coming back to chat shorly just moved to completion to focus on prompt */
         $latestMessagesArray = $chat->getChatResponse();
 
-        Log::info('[LaraChain] Getting the Summary');
+        Log::info('[LaraChain] Getting the Summary', [
+            'input' => $contentFlattened,
+            'driver' => $chat->chatable->getDriver(),
+            'messages' => count($latestMessagesArray),
+        ]);
 
         notify_ui($chat, 'Building Summary');
 
@@ -88,20 +96,45 @@ PROMPT;
             $chat->chatable->getDriver()
         )->chat($latestMessagesArray);
 
-        /**
-         * Lets Verify
-         */
-        $verifyPrompt = <<<'PROMPT'
-This is the results from a Vector search based on the Users Prompt.
-Then that was passed into the LLM to summarize the results.
-PROMPT;
+        $this->response = $response->content;
+
+        Log::info('[LaraChain] Summary Results before verification', [
+            'response' => $this->response,
+        ]);
+
+        if (Feature::active('verification_prompt')) {
+            $this->verify($chat, $originalPrompt, $context);
+        }
+
+        $message = $chat->addInput($this->response, RoleEnum::Assistant);
+
+        PromptHistory::create([
+            'prompt' => $contentFlattened,
+            'chat_id' => $chat->id,
+            'message_id' => $message->id,
+            /** @phpstan-ignore-next-line */
+            'collection_id' => $chat->getChatable()?->id,
+        ]);
+
+        $this->saveDocumentReference($message, $documentChunkResults);
+        notify_ui($chat, 'Complete');
+
+        return $this->response;
+    }
+
+    protected function verify(Chat $chat, string $originalPrompt, string $context): void
+    {
+        $verifyPrompt = <<<'EOD'
+        This is the results from a Vector search based on the Users Prompt.
+        Then that was passed into the LLM to summarize the results.
+        EOD;
 
         $dto = VerifyPromptInputDto::from(
             [
                 'chattable' => $chat,
                 'originalPrompt' => $originalPrompt,
                 'context' => $context,
-                'llmResponse' => $response->content,
+                'llmResponse' => $this->response,
                 'verifyPrompt' => $verifyPrompt,
             ]
         );
@@ -111,10 +144,10 @@ PROMPT;
         /** @var VerifyPromptOutputDto $response */
         $response = VerifyResponseAgent::verify($dto);
 
-        $message = $chat->addInput($response->response, RoleEnum::Assistant);
+        $this->response = $response->response;
 
-        $this->saveDocumentReference($message, $documentChunkResults);
-
-        return $response->response;
+        Log::info('[LaraChain] Verification', [
+            'output' => $this->response,
+        ]);
     }
 }

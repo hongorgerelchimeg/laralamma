@@ -3,19 +3,23 @@
 namespace App\Models;
 
 use App\Domains\Documents\StatusEnum;
+use App\Domains\UnStructured\StructuredTypeEnum;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use LlmLaraHub\LlmDriver\HasDrivers;
 use LlmLaraHub\TagFunction\Contracts\TaggableContract;
 use LlmLaraHub\TagFunction\Helpers\Taggable;
+use Pgvector\Laravel\HasNeighbors;
 use Pgvector\Laravel\Vector;
 
 /**
  * @property Document $document
+ * @property StructuredTypeEnum $type
  */
 class DocumentChunk extends Model implements HasDrivers, TaggableContract
 {
     use HasFactory;
+    use HasNeighbors;
     use Taggable;
 
     protected $casts = [
@@ -27,6 +31,7 @@ class DocumentChunk extends Model implements HasDrivers, TaggableContract
         'status_tagging' => StatusEnum::class,
         'status_summary' => StatusEnum::class,
         'meta_data' => 'array',
+        'type' => StructuredTypeEnum::class,
     ];
 
     protected $guarded = [];
@@ -64,7 +69,7 @@ class DocumentChunk extends Model implements HasDrivers, TaggableContract
         return $this->document->collection;
     }
 
-    public function getChat(): Chat
+    public function getChat(): ?Chat
     {
         /**
          * @TODO
@@ -97,6 +102,6 @@ class DocumentChunk extends Model implements HasDrivers, TaggableContract
 
     public function getSummary(): string
     {
-        return $this->summary;
+        return $this->content;
     }
 }

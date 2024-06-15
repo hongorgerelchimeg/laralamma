@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\Setting;
 use Feature;
 use Illuminate\Support\Facades\Http;
 use LlmLaraHub\LlmDriver\ClaudeClient;
@@ -44,6 +45,30 @@ class ClaudeClientTest extends TestCase
 
     }
 
+    public function test_completion_pool(): void
+    {
+        Setting::factory()->all_have_keys()->create();
+
+        $client = new ClaudeClient();
+
+        $data = get_fixture('claude_completion.json');
+
+        Http::fake([
+            'api.anthropic.com/*' => Http::response($data, 200),
+        ]);
+
+        Http::preventStrayRequests();
+
+        $results = $client->completionPool([
+            'test1',
+            'test2',
+            'test3',
+        ]);
+
+        $this->assertCount(3, $results);
+
+    }
+
     public function test_chat(): void
     {
         $client = new ClaudeClient();
@@ -68,11 +93,11 @@ class ClaudeClientTest extends TestCase
         $this->assertInstanceOf(CompletionResponse::class, $results);
 
         Http::assertSent(function ($request) {
-            $message1 = $request->data()['messages'][0]['role'];
-            $message2 = $request->data()['messages'][1]['role'];
+            $messageAssistant = $request->data()['messages'][0]['role'];
+            $messageUser = $request->data()['messages'][1]['role'];
 
-            return $message2 === 'assistant' &&
-                $message1 === 'user';
+            return $messageAssistant === 'assistant' &&
+                $messageUser === 'user';
         });
 
     }
@@ -109,12 +134,11 @@ class ClaudeClientTest extends TestCase
         $this->assertInstanceOf(CompletionResponse::class, $results);
 
         Http::assertSent(function ($request) {
-            $message0 = $request->data()['messages'][0]['role'];
-            $message1 = $request->data()['messages'][1]['role'];
-            $message2 = $request->data()['messages'][2]['role'];
+            $messageAssistant = $request->data()['messages'][1]['role'];
+            $messageUser = $request->data()['messages'][2]['role'];
 
-            return $message0 === 'assistant' &&
-                $message1 === 'user' && $message2 === 'assistant';
+            return $messageAssistant === 'assistant' &&
+                $messageUser === 'user';
         });
 
     }

@@ -24,6 +24,11 @@ class DocumentChunkFactory extends Factory
     {
         $embeddings = get_fixture('embedding_response.json');
 
+        /**
+         * @TODO
+         * Someone had a late night idea
+         * that he never finished
+         */
         $dto = StructuredDto::from([
             'type' => StructuredTypeEnum::Narrative,
             'content' => 'content',
@@ -48,6 +53,8 @@ class DocumentChunkFactory extends Factory
         return [
             'guid' => fake()->uuid(),
             'content' => fake()->sentence(10),
+            'sort_order' => fake()->numberBetween(1, 100),
+            'section_number' => fake()->numberBetween(1, 100),
             'status_embeddings' => StatusEnum::random(),
             'status_tagging' => StatusEnum::random(),
             'status_summary' => StatusEnum::random(),
@@ -59,6 +66,7 @@ class DocumentChunkFactory extends Factory
             'embedding_2048' => null,
             'embedding_4096' => null,
             'meta_data' => $dto->toArray(),
+            'type' => StructuredTypeEnum::Raw,
         ];
     }
 

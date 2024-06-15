@@ -42,7 +42,7 @@ class Chat extends Model implements HasDrivers
         return $this->chatable_type;
     }
 
-    public function getChat(): Chat
+    public function getChat(): ?Chat
     {
         return $this;
     }
@@ -134,7 +134,7 @@ class Chat extends Model implements HasDrivers
     public function getChatResponse(int $limit = 5): array
     {
         $latestMessages = $this->messages()
-            ->latest()
+            ->orderBy('id', 'desc')
             ->limit(5)
             ->get();
 

@@ -9,6 +9,7 @@ use App\Models\Collection;
 use App\Models\Document;
 use App\Models\DocumentChunk;
 use Facades\App\Domains\Agents\VerifyResponseAgent;
+use LlmLaraHub\LlmDriver\DistanceQuery\DistanceQueryFacade;
 use LlmLaraHub\LlmDriver\LlmDriverFacade;
 use Tests\TestCase;
 
@@ -44,7 +45,7 @@ class SearchAndSummarizeChatRepoTest extends TestCase
             'chatable_id' => $collection->id,
         ]);
 
-        VerifyResponseAgent::shouldReceive('verify')->once()->andReturn(
+        VerifyResponseAgent::shouldReceive('verify')->never()->andReturn(
             VerifyPromptOutputDto::from(
                 [
                     'chattable' => $chat,
@@ -64,10 +65,15 @@ class SearchAndSummarizeChatRepoTest extends TestCase
             'document_id' => $document->id,
         ]);
 
+        DistanceQueryFacade::shouldReceive('cosineDistance')
+            ->once()
+            ->andReturn(DocumentChunk::all());
+
         $results = (new SearchAndSummarizeChatRepo())->search($chat, 'Puppy');
 
         $this->assertNotNull($results);
         $this->assertDatabaseCount('message_document_references', 3);
+        $this->assertDatabaseCount('prompt_histories', 1);
 
     }
 }

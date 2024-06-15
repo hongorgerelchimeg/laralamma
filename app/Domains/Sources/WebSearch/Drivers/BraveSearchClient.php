@@ -11,12 +11,18 @@ class BraveSearchClient extends BaseSearchClient
 {
     public function search(string $search, array $options = []): SearchResponseDto
     {
+        $count = data_get($options, 'limit', 5);
 
-        //$is_news_breaking = data_get($options, "is_news_breaking", false);
-
-        $response = $this->getClient()->get('web/search', [
+        $query = [
             'q' => urlencode($search),
+            'count' => $count,
+        ];
+
+        \Illuminate\Support\Facades\Log::info('[LaraChain] Brave Search Query', [
+            'query' => $query,
         ]);
+
+        $response = $this->getClient()->get('web/search', $query);
 
         $video_dto = [];
         $web_dto = [];

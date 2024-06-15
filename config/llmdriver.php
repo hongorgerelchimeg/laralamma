@@ -3,6 +3,11 @@
 return [
     'driver' => env('LLM_DRIVER', 'mock'),
 
+    'distance_driver' => env('LLM_DISTANCE_DRIVER', 'post_gres'),
+
+    'chunking' => [
+        'default_size' => env('CHUNK_SIZE', 600),
+    ],
     'embedding_sizes' => [
         'mock' => 4096,
         'text-embedding-3-large' => 3072,

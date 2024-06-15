@@ -2,18 +2,21 @@
 
 namespace App\Http\Controllers;
 
-use App\Domains\Agents\VerifyPromptInputDto;
-use App\Domains\Agents\VerifyPromptOutputDto;
 use App\Domains\Messages\RoleEnum;
-use App\Events\ChatUpdatedEvent;
+use App\Events\ChatUiUpdateEvent;
 use App\Http\Resources\ChatResource;
 use App\Http\Resources\CollectionResource;
+use App\Http\Resources\FilterResource;
 use App\Http\Resources\MessageResource;
+use App\Http\Resources\PersonaResource;
+use App\Jobs\OrchestrateJob;
+use App\Jobs\SimpleSearchAndSummarizeOrchestrateJob;
 use App\Models\Chat;
 use App\Models\Collection;
-use Facades\App\Domains\Agents\VerifyResponseAgent;
-use Facades\LlmLaraHub\LlmDriver\Orchestrate;
-use Facades\LlmLaraHub\LlmDriver\SimpleSearchAndSummarizeOrchestrate;
+use App\Models\Filter;
+use App\Models\Persona;
+use Illuminate\Bus\Batch;
+use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Log;
 use LlmLaraHub\LlmDriver\LlmDriverFacade;
 use LlmLaraHub\LlmDriver\Requests\MessageInDto;
@@ -41,6 +44,9 @@ class ChatController extends Controller
         return inertia('Collection/Chat', [
             'collection' => new CollectionResource($collection),
             'chat' => new ChatResource($chat),
+            'chats' => ChatResource::collection($collection->chats()->latest()->paginate(20)),
+            'filters' => FilterResource::collection($collection->filters),
+            'personas' => PersonaResource::collection(Persona::all()),
             'system_prompt' => $collection->systemPrompt(),
             'settings' => [
                 'supports_functions' => LlmDriverFacade::driver($chat->getDriver())->hasFunctions(),
@@ -54,59 +60,96 @@ class ChatController extends Controller
         $validated = request()->validate([
             'input' => 'required|string',
             'completion' => 'boolean',
+            'tool' => ['nullable', 'string'],
+            'filter' => ['nullable', 'integer'],
+            'persona' => ['nullable', 'integer'],
         ]);
 
-        $chat->addInput(
-            message: $validated['input'],
-            role: RoleEnum::User,
-            show_in_thread: true);
+        try {
+            Log::info('Request', request()->toArray());
 
-        $messagesArray = [];
+            $input = $validated['input'];
 
-        $messagesArray[] = MessageInDto::from([
-            'content' => $validated['input'],
-            'role' => 'user',
-        ]);
+            $persona = data_get($validated, 'persona', null);
 
-        if (data_get($validated, 'completion', false)) {
-            Log::info('[LaraChain] Running Simple Completion');
-            $prompt = $validated['input'];
-
-            notify_ui($chat, 'We are running a completion back shortly');
-
-            $response = LlmDriverFacade::driver($chat->getDriver())->completion($prompt);
-            $response = $response->content;
-
-            $dto = VerifyPromptInputDto::from(
-                [
-                    'chattable' => $chat,
-                    'originalPrompt' => $prompt,
-                    'context' => $prompt,
-                    'llmResponse' => $response,
-                    'verifyPrompt' => 'This is a completion so the users prompt was past directly to the llm with all the context. That is why ORIGINAL PROMPT is the same as CONTEXT. Keep the format as Markdown.',
-                ]
-            );
-
-            notify_ui($chat, 'We are verifying the completion back shortly');
-
-            /** @var VerifyPromptOutputDto $response */
-            $response = VerifyResponseAgent::verify($dto);
+            if ($persona) {
+                $persona = Persona::find($persona);
+                $input = $persona->wrapPromptInPersona($input);
+            }
 
             $chat->addInput(
-                message: $response->response,
-                role: RoleEnum::Assistant,
+                message: $input,
+                role: RoleEnum::User,
                 show_in_thread: true);
 
-        } elseif (LlmDriverFacade::driver($chat->getDriver())->hasFunctions()) {
-            Log::info('[LaraChain] Running Orchestrate');
-            $response = Orchestrate::handle($messagesArray, $chat);
-        } else {
-            Log::info('[LaraChain] Simple Search and Summarize');
-            $response = SimpleSearchAndSummarizeOrchestrate::handle($validated['input'], $chat);
+            $messagesArray = [];
+
+            $messagesArray[] = MessageInDto::from([
+                'content' => $input,
+                'role' => 'user',
+            ]);
+
+            $filter = data_get($validated, 'filter', null);
+
+            if ($filter) {
+                $filter = Filter::find($filter);
+            }
+
+            if (data_get($validated, 'tool', null) === 'completion') {
+                Log::info('[LaraChain] Running Simple Completion');
+
+                notify_ui($chat, 'We are running a completion back shortly');
+
+                $messages = $chat->getChatResponse();
+                $response = LlmDriverFacade::driver($chat->getDriver())->chat($messages);
+                $response = $response->content;
+
+                $chat->addInput(
+                    message: $response,
+                    role: RoleEnum::Assistant,
+                    show_in_thread: true);
+
+            } elseif (data_get($validated, 'tool', null) === 'standards_checker') {
+                Log::info('[LaraChain] Running Standards Checker');
+                notify_ui($chat, 'Running Standards Checker');
+                $this->batchJob([
+                    new OrchestrateJob($messagesArray, $chat, $filter, 'standards_checker'),
+                ], $chat, 'search_and_summarize');
+            } elseif (LlmDriverFacade::driver($chat->getDriver())->hasFunctions()) {
+                Log::info('[LaraChain] Running Orchestrate added to queue');
+                $this->batchJob([
+                    new OrchestrateJob($messagesArray, $chat, $filter),
+                ], $chat, 'orchestrate');
+            } else {
+                Log::info('[LaraChain] Simple Search and Summarize added to queue');
+                $this->batchJob([
+                    new SimpleSearchAndSummarizeOrchestrateJob($input, $chat, $filter),
+                ], $chat, 'simple_search_and_summarize');
+            }
+
+            notify_ui($chat, 'Working on it!');
+
+            return response()->json(['message' => 'ok']);
+        } catch (\Exception $e) {
+            Log::error($e);
+
+            return response()->json(['message' => $e->getMessage()], 400);
         }
+    }
 
-        ChatUpdatedEvent::dispatch($chat->chatable, $chat);
-
-        return response()->json(['message' => $response]);
+    protected function batchJob(array $jobs, Chat $chat, string $function): void
+    {
+        $driver = $chat->getDriver();
+        Bus::batch($jobs)
+            ->name("Orchestrate Chat - {$chat->id} {$function} {$driver}")
+            ->then(function (Batch $batch) use ($chat) {
+                ChatUiUpdateEvent::dispatch(
+                    $chat->getChatable(),
+                    $chat,
+                    \App\Domains\Chat\UiStatusEnum::Complete->name
+                );
+            })
+            ->allowFailures()
+            ->dispatch();
     }
 }

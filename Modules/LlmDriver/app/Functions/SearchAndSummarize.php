@@ -3,26 +3,31 @@
 namespace LlmLaraHub\LlmDriver\Functions;
 
 use App\Domains\Agents\VerifyPromptInputDto;
+use App\Domains\Agents\VerifyPromptOutputDto;
 use App\Domains\Messages\RoleEnum;
+use App\Domains\Prompts\SummarizePrompt;
+use App\Models\Chat;
+use App\Models\PromptHistory;
 use Facades\App\Domains\Agents\VerifyResponseAgent;
 use Illuminate\Support\Facades\Log;
 use Laravel\Pennant\Feature;
+use LlmLaraHub\LlmDriver\DistanceQuery\DistanceQueryFacade;
 use LlmLaraHub\LlmDriver\HasDrivers;
 use LlmLaraHub\LlmDriver\Helpers\CreateReferencesTrait;
-use LlmLaraHub\LlmDriver\Helpers\DistanceQueryTrait;
 use LlmLaraHub\LlmDriver\LlmDriverFacade;
 use LlmLaraHub\LlmDriver\Requests\MessageInDto;
 use LlmLaraHub\LlmDriver\Responses\CompletionResponse;
-use LlmLaraHub\LlmDriver\Responses\EmbeddingsResponseDto;
 use LlmLaraHub\LlmDriver\Responses\FunctionResponse;
 
 class SearchAndSummarize extends FunctionContract
 {
-    use CreateReferencesTrait, DistanceQueryTrait;
+    use CreateReferencesTrait;
 
     protected string $name = 'search_and_summarize';
 
     protected string $description = 'Used to embed users prompt, search database and return summarized results.';
+
+    protected string $response = '';
 
     /**
      * @param  MessageInDto[]  $messageArray
@@ -30,8 +35,8 @@ class SearchAndSummarize extends FunctionContract
     public function handle(
         array $messageArray,
         HasDrivers $model,
-        FunctionCallDto $functionCallDto): FunctionResponse
-    {
+        FunctionCallDto $functionCallDto
+    ): FunctionResponse {
         Log::info('[LaraChain] Using Function: SearchAndSummarize');
 
         /**
@@ -48,7 +53,6 @@ class SearchAndSummarize extends FunctionContract
 
         $originalPrompt = $input->content;
 
-        /** @var EmbeddingsResponseDto $embedding */
         $embedding = LlmDriverFacade::driver(
             $model->getEmbeddingDriver()
         )->embedData($originalPrompt);
@@ -57,10 +61,11 @@ class SearchAndSummarize extends FunctionContract
 
         notify_ui($model, 'Searching documents');
 
-        $documentChunkResults = $this->distance(
+        $documentChunkResults = DistanceQueryFacade::cosineDistance(
             $embeddingSize,
             $model->getChatable()->id,
-            $embedding->embedding
+            $embedding->embedding,
+            $functionCallDto->filter,
         );
 
         $content = [];
@@ -80,29 +85,22 @@ class SearchAndSummarize extends FunctionContract
 
         $context = implode(' ', $content);
 
-        $contentFlattened = <<<PROMPT
-You are a helpful assistant in the RAG system: 
-This is data from the search results when entering the users prompt which is 
-
-### START PROMPT 
-{$originalPrompt} 
-### END PROMPT
-
-Please use this with the following context and only this, summarize it for the user and return as markdown so I can render it and strip out and formatting like extra spaces, tabs, periods etc: 
-
-### START Context
-$context
-### END Context
-PROMPT;
+        $contentFlattened = SummarizePrompt::prompt(
+            originalPrompt: $originalPrompt,
+            context: $context
+        );
 
         $model->getChat()->addInput(
             message: $contentFlattened,
             role: RoleEnum::Assistant,
-            systemPrompt: $model->getChat()->chatable->systemPrompt(),
+            systemPrompt: $model->getChat()->getChatable()->systemPrompt(),
             show_in_thread: false
         );
 
-        Log::info('[LaraChain] Getting the Summary from the search results');
+        Log::info('[LaraChain] Getting the Search and Summary results', [
+            'input' => $contentFlattened,
+            'driver' => $model->getChat()->getChatable()->getDriver(),
+        ]);
 
         $messageArray = MessageInDto::from([
             'content' => $contentFlattened,
@@ -111,11 +109,61 @@ PROMPT;
 
         notify_ui($model, 'Building Summary');
 
-        /** @var CompletionResponse $response */
-        $response = LlmDriverFacade::driver(
-            $model->getChatable()->getDriver()
-        )->chat([$messageArray]);
+        if (! get_class($model) === Chat::class) {
+            Log::info('[LaraChain] Using the Simple Completion', [
+                'input' => $contentFlattened,
+                'driver' => $model->getChatable()->getDriver(),
+            ]);
+            /** @var CompletionResponse $response */
+            $response = LlmDriverFacade::driver(
+                $model->getChatable()->getDriver()
+            )->completion($contentFlattened);
+        } else {
+            Log::info('[LaraChain] Using the Chat Completion', [
+                'input' => $contentFlattened,
+                'driver' => $model->getChatable()->getDriver(),
+            ]);
+            $messages = $model->getChat()->getChatResponse();
 
+            /** @var CompletionResponse $response */
+            $response = LlmDriverFacade::driver(
+                $model->getChatable()->getDriver()
+            )->chat($messages);
+        }
+
+        $this->response = $response->content;
+
+        if (Feature::active('verification_prompt')) {
+            $this->verify($model, $originalPrompt, $context);
+        }
+
+        $message = $model->getChat()->addInput($this->response, RoleEnum::Assistant);
+
+        PromptHistory::create([
+            'prompt' => $contentFlattened,
+            'chat_id' => $model->getChat()->id,
+            'message_id' => $message?->id,
+            'collection_id' => $model->getChat()->getChatable()?->id,
+        ]);
+
+        $this->saveDocumentReference($message, $documentChunkResults);
+
+        notify_ui_complete($model->getChat());
+
+        return FunctionResponse::from(
+            [
+                'content' => $this->response,
+                'save_to_message' => false,
+                'prompt' => $contentFlattened,
+            ]
+        );
+    }
+
+    protected function verify(
+        HasDrivers $model,
+        string $originalPrompt,
+        string $context
+    ): void {
         /**
          * Lets Verify
          */
@@ -129,7 +177,7 @@ PROMPT;
                 'chattable' => $model->getChat(),
                 'originalPrompt' => $originalPrompt,
                 'context' => $context,
-                'llmResponse' => $response->content,
+                'llmResponse' => $this->response,
                 'verifyPrompt' => $verifyPrompt,
             ]
         );
@@ -139,16 +187,7 @@ PROMPT;
         /** @var VerifyPromptOutputDto $response */
         $response = VerifyResponseAgent::verify($dto);
 
-        $message = $model->getChat()->addInput($response->response, RoleEnum::Assistant);
-
-        $this->saveDocumentReference($message, $documentChunkResults);
-
-        return FunctionResponse::from(
-            [
-                'content' => $response->response,
-                'save_to_message' => false,
-            ]
-        );
+        $this->response = $response->response;
     }
 
     /**

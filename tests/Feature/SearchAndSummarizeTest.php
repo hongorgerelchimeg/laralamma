@@ -3,11 +3,14 @@
 namespace Tests\Feature;
 
 use App\Domains\Agents\VerifyPromptOutputDto;
+use App\Domains\Messages\RoleEnum;
 use App\Models\Chat;
 use App\Models\Collection;
 use App\Models\Document;
 use App\Models\DocumentChunk;
+use App\Models\Message;
 use Facades\App\Domains\Agents\VerifyResponseAgent;
+use LlmLaraHub\LlmDriver\DistanceQuery\DistanceQueryFacade;
 use LlmLaraHub\LlmDriver\Functions\ParametersDto;
 use LlmLaraHub\LlmDriver\Functions\PropertyDto;
 use LlmLaraHub\LlmDriver\Functions\SearchAndSummarize;
@@ -74,6 +77,20 @@ class SearchAndSummarizeTest extends TestCase
             'chatable_id' => $collection->id,
         ]);
 
+        $messageUser = Message::factory()->create([
+            'body' => 'Results Before this one',
+            'role' => RoleEnum::User,
+            'is_chat_ignored' => false,
+            'chat_id' => $chat->id,
+        ]);
+
+        $messageAssistant = Message::factory()->create([
+            'body' => 'Results Before this one',
+            'role' => RoleEnum::Assistant,
+            'is_chat_ignored' => false,
+            'chat_id' => $chat->id,
+        ]);
+
         $document = Document::factory()->create([
             'collection_id' => $collection->id,
         ]);
@@ -82,7 +99,11 @@ class SearchAndSummarizeTest extends TestCase
             'document_id' => $document->id,
         ]);
 
-        VerifyResponseAgent::shouldReceive('verify')->once()->andReturn(
+        DistanceQueryFacade::shouldReceive('cosineDistance')
+            ->once()
+            ->andReturn(DocumentChunk::all());
+
+        VerifyResponseAgent::shouldReceive('verify')->never()->andReturn(
             VerifyPromptOutputDto::from(
                 [
                     'chattable' => $chat,

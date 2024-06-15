@@ -12,6 +12,8 @@ abstract class BaseClient
 {
     protected string $driver = 'mock';
 
+    protected int $poolSize = 3;
+
     public function embedData(string $data): EmbeddingsResponseDto
     {
         if (! app()->environment('testing')) {
@@ -99,7 +101,7 @@ abstract class BaseClient
         Log::info('LlmDriver::MockClient::completion');
 
         $data = <<<'EOD'
-        Voluptate irure cillum dolor anim officia reprehenderit dolor. Eiusmod veniam nostrud consectetur incididunt proident id. Anim adipisicing pariatur amet duis Lorem sunt veniam veniam est. Deserunt ea aliquip cillum pariatur consectetur. Dolor in reprehenderit adipisicing consectetur cupidatat ad cupidatat reprehenderit. Nostrud mollit voluptate aliqua anim pariatur excepteur eiusmod velit quis exercitation tempor quis excepteur.        
+        Voluptate irure cillum dolor anim officia reprehenderit dolor. Eiusmod veniam nostrud consectetur incididunt proident id. Anim adipisicing pariatur amet duis Lorem sunt veniam veniam est. Deserunt ea aliquip cillum pariatur consectetur. Dolor in reprehenderit adipisicing consectetur cupidatat ad cupidatat reprehenderit. Nostrud mollit voluptate aliqua anim pariatur excepteur eiusmod velit quis exercitation tempor quis excepteur.
 EOD;
 
         return new CompletionResponse($data);
@@ -118,6 +120,20 @@ EOD;
     public function hasFunctions(): bool
     {
         return count($this->getFunctions()) > 0;
+    }
+
+    /**
+     * @return CompletionResponse[]
+     *
+     * @throws \Exception
+     */
+    public function completionPool(array $prompts, int $temperature = 0): array
+    {
+        Log::info('LlmDriver::MockClient::completionPool');
+
+        return [
+            $this->completion($prompts[0]),
+        ];
     }
 
     public function getFunctions(): array
@@ -172,12 +188,14 @@ EOD;
                 $description = data_get($item, 'description');
                 $input_schema = data_get($item, 'input_schema', []);
                 $input_schema = json_encode($input_schema);
+
+                return sprintf("### START FUNCTION \n name: %s, description: %s, parameters: %s \n ###  END FUNCTION", $name, $description, $input_schema);
             }
         )->implode('\n');
 
         $systemPrompt = <<<EOD
-        You are a helpful assistant in a RAG system with tools and functions to help perform tasks. 
-        When you find the right function make sure to return just the JSON that represents the requirements of that function. 
+        You are a helpful assistant in a Retrieval augmented generation system (RAG - an architectural approach that can improve the efficacy of large language model (LLM) applications by leveraging custom data) system with tools and functions to help perform tasks.
+        When you find the right function make sure to return just the JSON that represents the requirements of that function.
         If no function is found just return {} empty json
 
         If so can you return the function name and arguments to call it with. the return format would just be json
@@ -193,9 +211,9 @@ EOD;
         Here is a list of the function names, description and parameters for the function. IT IS OK TO RETURN EMPTY ARRAY if none are needed.
         No extra text like "I think it is this function"
         The default function the system uses will take care of anything else so if the user just wants a word or phrase search just return an empy array the default.
-        Do not stray from this below list since these are the only functions the system can run other than the default one mentioned above. The below list of 
-        functions to choose from will start with ### START FUNCTION and end with ### END FUNCTION. Pleas ONLY choose from that list and return JSON OR return [] if 
-        none are a fit which is ok too: 
+        Do not stray from this below list since these are the only functions the system can run other than the default one mentioned above. The below list of
+        functions to choose from will start with ### START FUNCTION and end with ### END FUNCTION. Pleas ONLY choose from that list and return JSON OR return [] if
+        none are a fit which is ok too:
         {$functionsEncoded}
         EOD;
 
@@ -211,7 +229,11 @@ EOD;
                 'role' => 'system',
             ]);
         } else {
-            //replace the current one
+            foreach ($messages as $index => $message) {
+                if ($message['role'] === 'system') {
+                    $messages[$index]['content'] = $systemPrompt;
+                }
+            }
         }
 
         return $messages;
@@ -232,5 +254,17 @@ EOD;
     public function onQueue(): string
     {
         return 'api_request';
+    }
+
+    public function getMaxTokenSize(string $driver): int
+    {
+        $driver = config("llmdriver.drivers.$driver");
+
+        return data_get($driver, 'max_tokens', 8192);
+    }
+
+    public function poolSize(): int
+    {
+        return $this->poolSize;
     }
 }

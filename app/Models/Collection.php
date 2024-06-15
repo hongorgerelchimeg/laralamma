@@ -43,12 +43,17 @@ class Collection extends Model implements HasDrivers, TaggableContract
         return $this;
     }
 
+    public function filters(): HasMany
+    {
+        return $this->hasMany(Filter::class);
+    }
+
     public function team(): BelongsTo
     {
         return $this->belongsTo(Team::class);
     }
 
-    public function getChat(): Chat
+    public function getChat(): ?Chat
     {
         /**
          * @TODO
@@ -101,10 +106,25 @@ class Collection extends Model implements HasDrivers, TaggableContract
     {
         $systemPrompt = config('llmlarahub.collection.system_prompt');
         $prompt = <<<EOD
-{$systemPrompt}: 
+{$systemPrompt}:
 {$this->description}
 EOD;
 
         return $prompt;
+    }
+
+    public function sources(): HasMany
+    {
+        return $this->hasMany(Source::class);
+    }
+
+    public function outputs(): HasMany
+    {
+        return $this->hasMany(Output::class);
+    }
+
+    public function prompt_history(): HasMany
+    {
+        return $this->hasMany(PromptHistory::class);
     }
 }

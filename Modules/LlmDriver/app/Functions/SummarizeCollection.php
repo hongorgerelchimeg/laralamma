@@ -6,8 +6,10 @@ use App\Domains\Agents\VerifyPromptInputDto;
 use App\Domains\Agents\VerifyPromptOutputDto;
 use Facades\App\Domains\Agents\VerifyResponseAgent;
 use Illuminate\Support\Facades\Log;
+use Laravel\Pennant\Feature;
 use LlmLaraHub\LlmDriver\HasDrivers;
 use LlmLaraHub\LlmDriver\LlmDriverFacade;
+use LlmLaraHub\LlmDriver\Prompts\SummarizeCollectionPrompt;
 use LlmLaraHub\LlmDriver\Requests\MessageInDto;
 use LlmLaraHub\LlmDriver\Responses\FunctionResponse;
 
@@ -17,38 +19,33 @@ class SummarizeCollection extends FunctionContract
 
     protected string $description = 'NOT FOR SEARCH, This is used when the prompt wants to summarize the entire collection of documents';
 
+    protected string $response = '';
+
     public function handle(
         array $messageArray,
         HasDrivers $model,
         FunctionCallDto $functionCallDto): FunctionResponse
     {
-        Log::info('[LaraChain] SummarizeCollection function called');
+        Log::info('[LaraChain] SummarizeCollection Function called');
+
+        $usersInput = get_latest_user_content($messageArray);
 
         $summary = collect([]);
 
-        /**
-         * @TODO
-         * Token count???
-         */
-        foreach ($model->chatable->documents as $document) {
-            foreach ($document->document_chunks as $chunk) {
-                $summary->add($chunk->summary);
-            }
+        foreach ($model->getChatable()->documents as $document) {
+            $summary->add($document->summary);
         }
 
         notify_ui($model->getChat(), 'Getting Summary');
 
         $summary = $summary->implode('\n');
 
-        $prompt = <<<PROMPT
-Can you summarize all of this content for me from a collection of documents I uploaded what 
-follows is the content:
+        Log::info('[LaraChain] SummarizeCollection', [
+            'token_count_v2' => token_counter_v2($summary),
+            'token_count_v1' => token_counter($summary),
+        ]);
 
-### START ALL SUMMARY DATA
-$summary
-### END ALL SUMMARY DATA
-
-PROMPT;
+        $prompt = SummarizeCollectionPrompt::prompt($summary, $usersInput);
 
         $messagesArray = [];
 
@@ -59,30 +56,54 @@ PROMPT;
 
         $results = LlmDriverFacade::driver($model->getDriver())->chat($messagesArray);
 
-        notify_ui($model->getChat(), 'Summary complete going to do one verfication check on the summarhy');
+        $this->response = $results->content;
 
+        notify_ui($model->getChat(), 'Summary complete');
+
+        if (Feature::active('verification_prompt')) {
+            Log::info('[LaraChain] Verifying Summary Collection');
+            $this->verify($model, 'Can you summarize this collection of data for me.', $summary);
+        }
+
+        notify_ui_complete($model->getChat());
+
+        return FunctionResponse::from([
+            'content' => $this->response,
+            'prompt' => $prompt,
+            'requires_followup' => true,
+            'documentChunks' => collect([]),
+        ]);
+    }
+
+    protected function verify(
+        HasDrivers $model,
+        string $originalPrompt,
+        string $context
+    ): void {
+        /**
+         * Lets Verify
+         */
         $verifyPrompt = <<<'PROMPT'
-        This the content from all the documents in this collection.
-        Then that was passed into the LLM to summarize the results.
-        PROMPT;
+This the content from all the documents in this collection.
+Then that was passed into the LLM to summarize the results.
+PROMPT;
 
         $dto = VerifyPromptInputDto::from(
             [
                 'chattable' => $model->getChat(),
-                'originalPrompt' => 'Can you summarize this collection of data for me.',
-                'context' => $summary,
-                'llmResponse' => $results->content,
+                'originalPrompt' => $originalPrompt,
+                'context' => $context,
+                'llmResponse' => $this->response,
                 'verifyPrompt' => $verifyPrompt,
             ]
         );
 
+        notify_ui($model, 'Verifiying Results');
+
         /** @var VerifyPromptOutputDto $response */
         $response = VerifyResponseAgent::verify($dto);
 
-        return FunctionResponse::from([
-            'content' => $response->response,
-            'requires_followup' => true,
-        ]);
+        $this->response = $response->response;
     }
 
     /**

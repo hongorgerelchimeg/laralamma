@@ -4,9 +4,9 @@ namespace App\Http\Controllers;
 
 use App\Domains\Documents\StatusEnum;
 use App\Domains\Documents\TypesEnum;
-use App\Http\Resources\ChatResource;
 use App\Http\Resources\CollectionResource;
 use App\Http\Resources\DocumentResource;
+use App\Http\Resources\FilterResource;
 use App\Jobs\ProcessFileJob;
 use App\Models\Collection;
 use App\Models\Document;
@@ -20,6 +20,7 @@ class CollectionController extends Controller
         return inertia('Collection/Index', [
             'collections' => CollectionResource::collection(Collection::query()
                 ->withCount('documents')
+                ->orderBy('id', 'desc')
                 ->where('team_id', auth()->user()->current_team_id)
                 ->get()),
 
@@ -68,17 +69,12 @@ class CollectionController extends Controller
 
     public function show(Collection $collection)
     {
-        $chatResource = $collection->chats()->where('user_id', auth()->user()->id)
-            ->latest('id')
-            ->first();
-
-        if ($chatResource?->id) {
-            $chatResource = new ChatResource($chatResource);
-        }
+        $chatResource = $chatResource = $this->getChatResource($collection);
 
         return inertia('Collection/Show', [
             'chat' => $chatResource,
             'collection' => new CollectionResource($collection),
+            'filters' => FilterResource::collection($collection->filters),
             'documents' => DocumentResource::collection(Document::query()
                 ->where('collection_id', $collection->id)
                 ->latest('id')
@@ -96,21 +92,17 @@ class CollectionController extends Controller
             $mimetype = $file->getMimeType();
 
             //if pptx
-            Log::info($mimetype);
+            Log::info('[LaraChain] - Mimetype', [
+                'mimetype' => $mimetype,
+            ]);
 
-            if ($mimetype === 'application/vnd.openxmlformats-officedocument.presentationml.presentation') {
-                $document = Document::create([
-                    'collection_id' => $collection->id,
-                    'file_path' => $file->getClientOriginalName(),
-                    'type' => TypesEnum::Pptx,
-                ]);
-            } else {
-                $document = Document::create([
-                    'collection_id' => $collection->id,
-                    'file_path' => $file->getClientOriginalName(),
-                    'type' => TypesEnum::PDF,
-                ]);
-            }
+            $mimeType = TypesEnum::mimeTypeToType($mimetype);
+
+            $document = Document::create([
+                'collection_id' => $collection->id,
+                'file_path' => $file->getClientOriginalName(),
+                'type' => $mimeType,
+            ]);
 
             $file->storeAs(
                 path: $collection->id,

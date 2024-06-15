@@ -4,7 +4,6 @@ namespace App\Jobs;
 
 use App\Domains\Collections\CollectionStatusEnum;
 use App\Domains\Documents\StatusEnum;
-use App\Events\CollectionStatusEvent;
 use App\Models\Document;
 use Illuminate\Bus\Batchable;
 use Illuminate\Bus\Queueable;
@@ -31,16 +30,14 @@ class DocumentProcessingCompleteJob implements ShouldQueue
     public function handle(): void
     {
 
-        $count = $this->document->document_chunks()->count();
+        $count = $this->document->document_chunks()->where('section_number', 0)->count();
 
         $this->document->update([
             'status' => StatusEnum::Complete,
             'document_chunk_count' => $count,
         ]);
 
-        CollectionStatusEvent::dispatch(
-            $this->document->collection,
-            CollectionStatusEnum::PROCESSED);
+        notify_collection_ui($this->document->collection, CollectionStatusEnum::PROCESSED, 'Document Processed');
 
     }
 }

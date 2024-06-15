@@ -2,6 +2,8 @@
 
 namespace LlmLaraHub\LlmDriver;
 
+use App\Models\Setting;
+use Illuminate\Http\Client\Pool;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -95,14 +97,81 @@ class GroqClient extends BaseClient
         return $response->json()['error']['message'];
     }
 
+    /**
+     * @return CompletionResponse[]
+     *
+     * @throws \Exception
+     */
+    public function completionPool(array $prompts, int $temperature = 0): array
+    {
+        $token = Setting::getSecret('groq', 'api_key');
+
+        if (is_null($token)) {
+            throw new \Exception('Missing Groq ai api key');
+        }
+
+        $model = $this->getConfig('groq')['models']['completion_model'];
+        $maxTokens = $this->getConfig('groq')['max_tokens'];
+
+        $responses = Http::pool(function (Pool $pool) use (
+            $prompts,
+            $token,
+            $model,
+            $maxTokens
+        ) {
+            foreach ($prompts as $prompt) {
+                $pool->withHeaders([
+                    'content-type' => 'application/json',
+                    'Authorization' => 'Bearer '.$token,
+                ])->withToken($token)
+                    ->retry(3, 6000)
+                    ->timeout(120)
+                    ->baseUrl($this->baseUrl)
+                    ->post('/chat/completions', [
+                        'model' => $model,
+                        'max_tokens' => $maxTokens,
+                        'messages' => [
+                            [
+                                'role' => 'user',
+                                'content' => $prompt,
+                            ],
+                        ],
+                    ]);
+            }
+
+        });
+
+        $results = [];
+
+        foreach ($responses as $index => $response) {
+            if ($response->ok()) {
+                $response = $response->json();
+                foreach (data_get($response, 'choices', []) as $result) {
+                    $result = data_get($result, 'message.content', '');
+                    $results[] = CompletionResponse::from([
+                        'content' => $result,
+                    ]);
+                }
+            } else {
+                Log::error('Groq API Error ', [
+                    'index' => $index,
+                    'error' => $response->body(),
+                ]);
+            }
+        }
+
+        return $results;
+    }
+
     protected function getClient()
     {
-        $api_token = $this->getConfig('groq')['api_key'];
+        $api_token = Setting::getSecret('groq', 'api_key');
+
         if (! $api_token) {
             throw new \Exception('Groq API Token not found');
         }
 
-        return Http::retry(3, 6000)->withToken($api_token)->withHeaders([
+        return Http::retry(3, 6000)->timeout(120)->withToken($api_token)->withHeaders([
             'content-type' => 'application/json',
         ])->baseUrl($this->baseUrl);
     }
@@ -125,8 +194,6 @@ class GroqClient extends BaseClient
 
         $messages = $this->insertFunctionsIntoMessageArray($messages);
 
-        //put_fixture("groq_functions_prompt.json",$messages);
-
         $results = $this->getClient()->post('/chat/completions', [
             'model' => $model,
             'max_tokens' => $maxTokens,
@@ -140,8 +207,6 @@ class GroqClient extends BaseClient
             Log::error('Groq API Error '.$error);
             throw new \Exception('Groq API Error '.$error);
         }
-
-        //put_fixture("groq_functions_response.json", $results->json());
 
         foreach ($results->json()['choices'] as $content) {
             $functionArray = data_get($content, 'message.content', []);
@@ -199,5 +264,10 @@ class GroqClient extends BaseClient
                 ],
             ];
         })->toArray();
+    }
+
+    public function onQueue(): string
+    {
+        return 'groq';
     }
 }

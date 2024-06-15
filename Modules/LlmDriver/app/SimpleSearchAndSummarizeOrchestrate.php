@@ -2,7 +2,6 @@
 
 namespace LlmLaraHub\LlmDriver;
 
-use App\Events\ChatUiUpdateEvent;
 use App\Models\Chat;
 use Facades\App\Domains\Messages\SearchAndSummarizeChatRepo;
 use Illuminate\Support\Facades\Log;
@@ -17,12 +16,10 @@ class SimpleSearchAndSummarizeOrchestrate
     {
         Log::info('[LaraChain] Skipping over functions doing search and summarize');
 
-        ChatUiUpdateEvent::dispatch(
+        notify_ui(
             $chat->chatable,
-            $chat,
             'Searching data now to summarize content'
         );
-
         $response = SearchAndSummarizeChatRepo::search($chat, $message);
 
         return $response;

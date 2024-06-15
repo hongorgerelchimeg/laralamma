@@ -17,5 +17,20 @@ class DocumentTest extends TestCase
         $this->assertNotNull($model->collection->id);
         $this->assertCount(1, $model->collection->documents);
         $this->assertNotNull($model->collection->documents()->first()->id);
+        $this->assertEquals(
+            $model->summary,
+            $model->content
+        );
+    }
+
+    public function test_parent()
+    {
+        $modelParent = \App\Models\Document::factory()->create();
+        $model = \App\Models\Document::factory()->create([
+            'parent_id' => $modelParent->id,
+        ]);
+
+        $this->assertEquals($modelParent->id,
+            $model->parent->id);
     }
 }

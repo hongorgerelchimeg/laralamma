@@ -1,10 +1,16 @@
 <template>
-    <SecondaryButton 
+    <button
     type="button"
     @click="start"
+    :class=classValue
     class="flex justify-between items-center gap-4">
-        <ChatBubbleLeftIcon class="h-5 w-5"></ChatBubbleLeftIcon>
-        start a new chat</SecondaryButton>
+
+        <slot>
+            Chat with your Collection
+        </slot>
+
+
+    </button>
 </template>
 
 <script setup>
@@ -16,6 +22,7 @@ import { ChatBubbleLeftIcon } from '@heroicons/vue/24/outline';
 const toast = useToast();
 
 const props = defineProps({
+    classValue: String,
     collection: {
         type: Object,
         required: true,
